@@ -66,7 +66,30 @@ namespace Benchmarking {
             }
 
             stopwatch.Stop();
-            Console.WriteLine("bag: " + stopwatch.ElapsedMilliseconds + "ms");
+            Console.WriteLine("managed: " + stopwatch.ElapsedMilliseconds + "ms");
+
+            FiniteConcurrentQueueUnmanaged<int> unmanaged = new FiniteConcurrentQueueUnmanaged<int>(capacity);
+
+            stopwatch.Reset();
+            stopwatch.Start();
+
+            for (int i = 0; i < threads.Length; i++) {
+                (threads[i] = new Thread(() => {
+                    for (int j = 0; j < threadIterations; j++) {
+                        if (j % 3 == 0) {
+                            unmanaged.TryTake(out int n);
+                        } else {
+                            unmanaged.TryAdd(1);
+                        }
+                    }
+                })).Start();
+            }
+            for (int i = 0; i < threads.Length; i++) {
+                threads[i].Join();
+            }
+
+            stopwatch.Stop();
+            Console.WriteLine("unmanaged: " + stopwatch.ElapsedMilliseconds + "ms");
             Console.ReadKey();
         }
     }

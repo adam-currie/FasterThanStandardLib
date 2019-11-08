@@ -6,31 +6,28 @@ using System.Threading;
 
 namespace FasterThanStandardLib {
 
+    public class FiniteConcurrentQueueUnmanaged<T> : FiniteConcurrentQueue<T> where T : unmanaged {
+        public FiniteConcurrentQueueUnmanaged(int capacity) : base(capacity, true) { }
+    }
+
     public class FiniteConcurrentQueue<T> : IProducerConsumerCollection<T> {
         private static readonly int MAX_CAPACITY = 1073741824;//2^30, largest capacity we can allow because next highest power of 2 would wrap
         private readonly T[] items;
         private readonly int capacity;
         private readonly int indexifier;
-        private readonly bool isUnmanaged = CheckIfUnmanaged(typeof(T));
         private volatile int addCursor = int.MinValue;
         private volatile int takeCursor = int.MinValue;
+        private readonly bool isUnmanaged;
 
-        class RequiresUnmanaged<U> where U : unmanaged { }
+        public FiniteConcurrentQueue(int capacity) : this(capacity, false) {}
 
-        private static bool CheckIfUnmanaged(Type type) {
-            try { 
-                typeof(RequiresUnmanaged<>).MakeGenericType(type); 
-                return true; 
-            } catch (Exception) { 
-                return false; 
-            }
-        }
-
-        public FiniteConcurrentQueue(int capacity) {
+        protected FiniteConcurrentQueue(int capacity, bool isUnmanaged) {
             if (capacity < 0) throw new ArgumentException("capacity cannot be negative");
             if (capacity > MAX_CAPACITY) throw new ArgumentException("capacity cannot be greater than " + MAX_CAPACITY);
 
+            this.isUnmanaged = isUnmanaged;
             this.capacity = capacity;
+
             //need array size to be a power of 2 so we can do modulo with bitwise ANDing
             var arraySize = NextPositivePowerOf2(capacity);
             indexifier = arraySize - 1;
@@ -82,8 +79,18 @@ namespace FasterThanStandardLib {
                 if (takeCursor < addCursor) {
                     int stashedTakeCursor = Interlocked.Increment(ref takeCursor);
                     if (stashedTakeCursor <= addCursor) {
-                        //success (EARLY RETURN)
-                        item = items[stashedTakeCursor & indexifier];
+                        //success
+
+                        if (isUnmanaged) {
+                            //don't need to get rid of old value because it can't leak references
+                            item = items[stashedTakeCursor & indexifier];
+                        } else {
+                            //using ref into array to avoid double lookup for take and remove(actually tested this don't @ me)
+                            ref T itemRef = ref items[stashedTakeCursor & indexifier];
+                            item = itemRef;
+                            itemRef = default;
+                        }
+
                         return true;
                     } else {
                         //fix it
