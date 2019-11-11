@@ -12,14 +12,16 @@ namespace FasterThanStandardLib {
 
     public class FiniteConcurrentQueue<T> : IProducerConsumerCollection<T> {
         private static readonly int MAX_CAPACITY = 1073741824;//2^30, largest capacity we can allow because next highest power of 2 would wrap
-        private readonly T[] items;
+        private readonly ItemSlot[] items;
         private readonly int capacity;
         private readonly int indexifier;
         private volatile int addCursor = int.MinValue;
         private volatile int takeCursor = int.MinValue;
         private readonly bool isUnmanaged;
+        private SpinLock addCursorLock = new SpinLock(false);
+        private SpinLock takeCursorLock = new SpinLock(false);
 
-        public FiniteConcurrentQueue(int capacity) : this(capacity, false) {}
+        public FiniteConcurrentQueue(int capacity) : this(capacity, false) { }
 
         protected FiniteConcurrentQueue(int capacity, bool isUnmanaged) {
             if (capacity < 0) throw new ArgumentException("capacity cannot be negative");
@@ -29,14 +31,17 @@ namespace FasterThanStandardLib {
             this.capacity = capacity;
 
             //need array size to be a power of 2 so we can do modulo with bitwise ANDing
-            var arraySize = NextPositivePowerOf2(capacity);
+            var arraySize = NextPositivePowerOf2(capacity);//todo: probably want a minimum size here to reduce contention
             indexifier = arraySize - 1;
-            items = new T[arraySize];
+            items = new ItemSlot[arraySize];
+            for (int i = 0; i < arraySize; i++) {
+                items[i] = new ItemSlot();
+            }
         }
 
-        public int Count => Math.Max(0, addCursor-takeCursor);
+        public int Count => Math.Max(0, addCursor - takeCursor);
 
-        public bool IsSynchronized => false;//although this code is thread safe it doesn't use lock synchronization
+        public bool IsSynchronized => false;//although this code is thread safe it doesn't use full lock synchronization
 
         public object SyncRoot => throw new NotSupportedException();
 
@@ -54,53 +59,84 @@ namespace FasterThanStandardLib {
 
         public T[] ToArray() {
             throw new NotImplementedException();
+            //todo: we need to stop these statements from being swapped by using a memory barrier or something
+
+            int add = addCursor;//need to stash BEFORE the snapshot to have a conservatively low 
+
+            T[] clone = (T[])items.Clone();
+
+            int take = takeCursor;
+
+
         }
 
         public bool TryAdd(T item) {
-            unchecked {
-                if (addCursor - takeCursor < capacity) {
-                    int stashedAddCursor = Interlocked.Increment(ref addCursor);
-                    if (stashedAddCursor - takeCursor <= capacity) {
-                        //success
-                        items[stashedAddCursor & indexifier] = item;
-                        return true;
+            int localAddCursor;
+            {
+                int addCurLimit = capacity + takeCursor;
+                bool cursorLockTaken = false;
+                try { addCursorLock.Enter(ref cursorLockTaken);
+                    if(addCursor < addCurLimit) {
+                        localAddCursor = unchecked(++addCursor);
                     } else {
-                        //fix it
-                        Interlocked.Decrement(ref addCursor);
+                        return false;// EARLY RETURN
                     }
-                }
+                } finally { if(cursorLockTaken) addCursorLock.Exit(false); }
             }
 
-            return false;
+            ItemSlot slot = items[localAddCursor & indexifier];
+
+            bool adderLockTaken = false;
+            try { slot.adderLock.Enter(ref adderLockTaken);
+
+                while(slot.hasItem == true) {
+                    //waiting for item to be taken
+                    Thread.SpinWait(1);
+                }
+
+                //if (slot.hasItem) throw new Exception("HAS ITEM??");//debug
+                slot.Item = item;
+                slot.hasItem = true;
+
+                return true;
+
+            } finally { if(adderLockTaken) slot.adderLock.Exit(false); }//todo: try removing false on all these calls
         }
 
         public bool TryTake(out T item) {
-            unchecked {
+            int cur;
+            bool cursorLockTaken = false;
+            try { takeCursorLock.Enter(ref cursorLockTaken);
+
                 if (takeCursor < addCursor) {
-                    int stashedTakeCursor = Interlocked.Increment(ref takeCursor);
-                    if (stashedTakeCursor <= addCursor) {
-                        //success
-
-                        if (isUnmanaged) {
-                            //don't need to get rid of old value because it can't leak references
-                            item = items[stashedTakeCursor & indexifier];
-                        } else {
-                            //using ref into array to avoid double lookup for take and remove(actually tested this don't @ me)
-                            ref T itemRef = ref items[stashedTakeCursor & indexifier];
-                            item = itemRef;
-                            itemRef = default;
-                        }
-
-                        return true;
-                    } else {
-                        //fix it
-                        Interlocked.Decrement(ref takeCursor);
-                    }
+                    cur = unchecked(++takeCursor);
+                } else {
+                    //queue is empty
+                    item = default;
+                    return false;// EARLY RETURN
                 }
-            }
+            } finally { if(cursorLockTaken) takeCursorLock.Exit(false); }
 
-            item = default;
-            return false;
+            ItemSlot slot = items[cur & indexifier];
+
+            bool takerLockTaken = false;
+            try { slot.takerLock.Enter(ref takerLockTaken);
+
+                while (slot.hasItem == false) {
+                    //waiting for item to be added
+                    Thread.SpinWait(1);
+                }
+
+                //if (!slot.hasItem) throw new Exception("NO ITEM??");//debug
+                item = slot.Item;
+                slot.hasItem = false;
+                if (isUnmanaged) {
+                    slot.Item = default;
+                }
+
+                return true;
+
+            } finally { if(takerLockTaken) slot.takerLock.Exit(false); }
         }
 
         IEnumerator IEnumerable.GetEnumerator() {
@@ -116,6 +152,13 @@ namespace FasterThanStandardLib {
             n |= n >> 8;
             n |= n >> 16;
             return checked(++n);
+        }
+
+        private class ItemSlot {
+            public T Item;
+            public volatile bool hasItem;
+            public SpinLock adderLock = new SpinLock(false);
+            public SpinLock takerLock = new SpinLock(false);
         }
 
     }
