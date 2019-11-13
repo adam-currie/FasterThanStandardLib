@@ -13,7 +13,7 @@ namespace FasterThanStandardLib {
 
     public class FiniteConcurrentQueue<T> : IProducerConsumerCollection<T> {
         private static readonly int MAX_CAPACITY = 1073741824;//2^30, largest capacity we can allow because next highest power of 2 would wrap
-        private readonly ItemSlot[] items;
+        private readonly ItemSlot[] slots;
         private readonly int capacity;
         private readonly int indexifier;
         private volatile int addCursor = int.MinValue;
@@ -34,9 +34,9 @@ namespace FasterThanStandardLib {
             //need array size to be a power of 2 so we can do modulo with bitwise ANDing
             var arraySize = NextPositivePowerOf2(capacity);//todo: probably want a minimum size here to reduce contention
             indexifier = arraySize - 1;
-            items = new ItemSlot[arraySize];
+            slots = new ItemSlot[arraySize];
             for (int i = 0; i < arraySize; i++) {
-                items[i] = new ItemSlot();
+                slots[i] = new ItemSlot();
             }
         }
 
@@ -64,7 +64,7 @@ namespace FasterThanStandardLib {
 
             int add = addCursor;//need to stash BEFORE the snapshot to have a conservatively low 
 
-            T[] clone = (T[])items.Clone();
+            T[] clone = (T[])slots.Clone();
 
             int take = takeCursor;
 
@@ -85,23 +85,8 @@ namespace FasterThanStandardLib {
                 } finally { if(cursorLockTaken) addCursorLock.Exit(false); }
             }
 
-            ItemSlot slot = items[localAddCursor & indexifier];
-
-            bool adderLockTaken = false;
-            try { slot.adderLock.Enter(ref adderLockTaken);
-
-                while(slot.hasItem == true) {
-                    //waiting for item to be taken
-                    Thread.SpinWait(1);
-                }
-
-                Debug.Assert(!slot.hasItem);
-                slot.Item = item;
-                slot.hasItem = true;
-
-                return true;
-
-            } finally { if(adderLockTaken) slot.adderLock.Exit(false); }//todo: try removing false on all these calls
+            slots[localAddCursor & indexifier].Add(item);
+            return true;
         }
 
         public bool TryTake(out T item) {
@@ -118,26 +103,8 @@ namespace FasterThanStandardLib {
                 }
             } finally { if(cursorLockTaken) takeCursorLock.Exit(false); }
 
-            ItemSlot slot = items[cur & indexifier];
-
-            bool takerLockTaken = false;
-            try { slot.takerLock.Enter(ref takerLockTaken);
-
-                while (slot.hasItem == false) {
-                    //waiting for item to be added
-                    Thread.SpinWait(1);
-                }
-
-                Debug.Assert(slot.hasItem);
-                item = slot.Item;
-                slot.hasItem = false;
-                if (isUnmanaged) {
-                    slot.Item = default;
-                }
-
-                return true;
-
-            } finally { if(takerLockTaken) slot.takerLock.Exit(false); }
+            slots[cur & indexifier].Take(out item);
+            return true;
         }
 
         IEnumerator IEnumerable.GetEnumerator() {
@@ -155,11 +122,68 @@ namespace FasterThanStandardLib {
             return checked(++n);
         }
 
-        private class ItemSlot {
+        private class ItemSlot {//todo: make struct?
+            private ItemLeaf[] leaves;
+            private readonly int indexifier;
+
+            public ItemSlot() {
+                leaves = new ItemLeaf[8];
+                for(int i = 0; i < 8; i++) {
+                    leaves[i] = new ItemLeaf();
+                }
+                indexifier = 8 - 1;
+            }
+
+            public void Take(out T item) {//todo: true returning instead of ref
+                int i = 0;
+                do {
+                    ItemLeaf leaf = leaves[i & indexifier];
+
+                    bool taken = false;
+                    try {
+                        Monitor.TryEnter(leaf, ref taken);
+                        if(taken) {
+                            if(leaf.hasItem) {
+                                item = leaf.Item;
+                                leaf.hasItem = false;
+                                return;
+                            }
+                        }
+                    } finally {
+                        if(taken) Monitor.Exit(leaf);
+                    }
+
+                    i++;
+                } while(true);
+            }
+
+            public void Add(T item) {
+                int i = 0;
+                do {
+                    ItemLeaf leaf = leaves[i & indexifier];
+
+                    bool taken = false;
+                    try {
+                        Monitor.TryEnter(leaf, ref taken);
+                        if(taken) {
+                            if(!leaf.hasItem) {
+                                leaf.Item = item;
+                                leaf.hasItem = true;
+                                return;
+                            }
+                        }
+                    } finally { 
+                        if(taken) Monitor.Exit(leaf); 
+                    }
+
+                    i++;
+                } while(true);
+            }
+        }
+
+        private class ItemLeaf {
             public T Item;
             public volatile bool hasItem;
-            public SpinLock adderLock = new SpinLock(false);
-            public SpinLock takerLock = new SpinLock(false);
         }
 
     }
