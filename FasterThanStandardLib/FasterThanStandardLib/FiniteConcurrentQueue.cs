@@ -2,6 +2,7 @@
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 
 namespace FasterThanStandardLib {
@@ -94,7 +95,7 @@ namespace FasterThanStandardLib {
                     Thread.SpinWait(1);
                 }
 
-                //if (slot.hasItem) throw new Exception("HAS ITEM??");//debug
+                Debug.Assert(!slot.hasItem);
                 slot.Item = item;
                 slot.hasItem = true;
 
@@ -127,7 +128,7 @@ namespace FasterThanStandardLib {
                     Thread.SpinWait(1);
                 }
 
-                //if (!slot.hasItem) throw new Exception("NO ITEM??");//debug
+                Debug.Assert(slot.hasItem);
                 item = slot.Item;
                 slot.hasItem = false;
                 if (isUnmanaged) {
