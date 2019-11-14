@@ -72,17 +72,20 @@ namespace FasterThanStandardLib {
         }
 
         public bool TryAdd(T item) {
-            int localAddCursor;
-            {
-                int addCurLimit = capacity + takeCursor;
-                bool cursorLockTaken = false;
-                try { addCursorLock.Enter(ref cursorLockTaken);
-                    if(addCursor < addCurLimit) {
-                        localAddCursor = unchecked(++addCursor);
-                    } else {
-                        return false;// EARLY RETURN
-                    }
-                } finally { if(cursorLockTaken) addCursorLock.Exit(); }
+            int localAddCursor = 0;
+            int addCurLimit = capacity + takeCursor;
+
+            bool cursorLockTaken = false;
+            try { 
+                addCursorLock.Enter(ref cursorLockTaken);
+
+                if(addCursor < addCurLimit) {
+                    localAddCursor = unchecked(++addCursor);
+                } else {
+                    return false;// EARLY RETURN
+                }
+            } finally { 
+                if(cursorLockTaken) addCursorLock.Exit(); 
             }
 
             slots[localAddCursor & indexifier].Add(item);
@@ -92,7 +95,8 @@ namespace FasterThanStandardLib {
         public bool TryTake(out T item) {
             int cur;
             bool cursorLockTaken = false;
-            try { takeCursorLock.Enter(ref cursorLockTaken);
+            try { 
+                takeCursorLock.Enter(ref cursorLockTaken);
 
                 if (takeCursor < addCursor) {
                     cur = unchecked(++takeCursor);
@@ -101,7 +105,9 @@ namespace FasterThanStandardLib {
                     item = default;
                     return false;// EARLY RETURN
                 }
-            } finally { if(cursorLockTaken) takeCursorLock.Exit(); }
+            } finally { 
+                if(cursorLockTaken) takeCursorLock.Exit(); 
+            }
 
             slots[cur & indexifier].Take(out item);
             return true;
