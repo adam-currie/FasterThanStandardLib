@@ -11,38 +11,51 @@ using System.Threading.Tasks;
 namespace Benchmarking {
     class Program {
         static void Main() {
+            var capacity = 128;
+            var iterationsPerThread = 10000000;
+            var threadCount = 2;
+            Stopwatch stopwatch = new Stopwatch();
+            int numOfQueues = 16;
 
-            Console.ReadKey();
+            Console.WriteLine("queues have a capacity of " + capacity);
+            Console.WriteLine("each queue runs on " + threadCount + " threads, so if there are 3 queues being tested concurrently that's 48 total");
+            Console.WriteLine("each thread does " + iterationsPerThread + " operations on it's target queue(2 adds for each take)");
+            Console.WriteLine("the reason to test multiple queues at once is to simulate programs where a queue isn't the only thing being hit, so it reduced concurrent access");
+            
+            while(true) {
+                Console.WriteLine();
 
-            var capacity = 64;
-            var iterationsPerThread =50000000;
-            var threadCount = 10;
+                {
+                    stopwatch.Start();
+                    Task[] tasks = new Task[numOfQueues];
+                    for(int i = 0; i < numOfQueues; i++) {
+                        tasks[i] = TestConcurrentQueueAsync(capacity, iterationsPerThread, threadCount);
+                    }
+                    for(int i = 0; i < numOfQueues; i++) {
+                        tasks[i].Wait();
+                    }
+                    stopwatch.Stop();
+                    Console.WriteLine("ConcurrentQueue x" + numOfQueues + ": " + stopwatch.ElapsedMilliseconds + "ms");
+                    stopwatch.Reset();
+                }
 
-            Stopwatch stopwatch = Stopwatch.StartNew();
-            TestConcurrentQueue(capacity, iterationsPerThread, threadCount);
-            stopwatch.Stop();
-            Console.WriteLine("queue: " + stopwatch.ElapsedMilliseconds + "ms");
-            stopwatch.Reset();
+                {
+                    stopwatch.Start();
+                    Task[] tasks = new Task[numOfQueues];
+                    for(int i = 0; i < numOfQueues; i++) {
+                        tasks[i] = TestFiniteConcurrentQueueAsync(capacity, iterationsPerThread, threadCount);
+                    }
+                    for(int i = 0; i < numOfQueues; i++) {
+                        tasks[i].Wait();
+                    }
+                    stopwatch.Stop();
+                    Console.WriteLine("FiniteConcurrentQueue x" + numOfQueues + ": " + stopwatch.ElapsedMilliseconds + "ms");
+                    stopwatch.Reset();
+                }
 
-            stopwatch.Start();
-            TestFiniteConcurrentQueueAsync(capacity, iterationsPerThread, threadCount).Wait();
-            stopwatch.Stop();
-            Console.WriteLine("fcq: " + stopwatch.ElapsedMilliseconds + "ms");
-
-            stopwatch.Start();
-            var numOfQueues = 3;
-            Task[] tasks = new Task[numOfQueues];
-            for(int i = 0; i < numOfQueues; i++) {
-                tasks[i] = TestFiniteConcurrentQueueAsync(capacity, iterationsPerThread, threadCount);
+                numOfQueues++;
             }
-            for(int i = 0; i < numOfQueues; i++) {
-                tasks[i].Wait();
-            }
-            stopwatch.Stop();
-            Console.WriteLine("fqc x" + numOfQueues + ": " + stopwatch.ElapsedMilliseconds + "ms");
 
-            while(Console.KeyAvailable) Console.ReadKey(true);
-            Console.ReadKey();
         }
 
         private async static Task TestFiniteConcurrentQueueAsync(int capacity, int iterationsPerThread, int threadCount) {
@@ -72,7 +85,7 @@ namespace Benchmarking {
             });
         }
 
-        private static void TestConcurrentQueue(int capacity, int iterationsPerThread, int threadCount) {
+        private async static Task TestConcurrentQueueAsync(int capacity, int iterationsPerThread, int threadCount) {
             Thread[] threads = new Thread[threadCount];
             ConcurrentQueue<int> queue = new ConcurrentQueue<int>();
             int count = 0;
@@ -98,9 +111,11 @@ namespace Benchmarking {
                 })).Start();
             }
 
-            for(int i = 0; i < threads.Length; i++) {
-                threads[i].Join();
-            }
+            await Task.Run(() => {
+                for(int i = 0; i < threads.Length; i++) {
+                    threads[i].Join();
+                }
+            });
         }
     }
 }
