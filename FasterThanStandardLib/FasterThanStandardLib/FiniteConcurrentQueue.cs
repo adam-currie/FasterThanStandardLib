@@ -16,11 +16,11 @@ namespace FasterThanStandardLib {
         private readonly ItemSlot[] slots;
         private readonly int capacity;
         private readonly int indexifier;
+        private readonly bool isUnmanaged;
         private volatile int addCursor = int.MinValue;
         private volatile int takeCursor = int.MinValue;
-        private readonly bool isUnmanaged;
-        private SpinLock addCursorLock = new SpinLock(false);
-        private SpinLock takeCursorLock = new SpinLock(false);
+        private HighContentionSpinLock addCursorLock = new HighContentionSpinLock();
+        private HighContentionSpinLock takeCursorLock = new HighContentionSpinLock();
 
         public FiniteConcurrentQueue(int capacity) : this(capacity, false) { }
 
@@ -82,7 +82,7 @@ namespace FasterThanStandardLib {
                     } else {
                         return false;// EARLY RETURN
                     }
-                } finally { if(cursorLockTaken) addCursorLock.Exit(false); }
+                } finally { if(cursorLockTaken) addCursorLock.Exit(); }
             }
 
             slots[localAddCursor & indexifier].Add(item);
@@ -101,7 +101,7 @@ namespace FasterThanStandardLib {
                     item = default;
                     return false;// EARLY RETURN
                 }
-            } finally { if(cursorLockTaken) takeCursorLock.Exit(false); }
+            } finally { if(cursorLockTaken) takeCursorLock.Exit(); }
 
             slots[cur & indexifier].Take(out item);
             return true;
