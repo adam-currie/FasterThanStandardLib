@@ -75,8 +75,12 @@ namespace FasterThanStandardLib {
             int localAddCursor = 0;
             int addCurLimit = capacity + takeCursor;
 
+            if (addCursor < addCurLimit) {
+                return false;
+            }
+
             bool cursorLockTaken = false;
-            try { 
+            try {
                 addCursorLock.Enter(ref cursorLockTaken);
 
                 if(addCursor < addCurLimit) {
@@ -93,13 +97,19 @@ namespace FasterThanStandardLib {
         }
 
         public bool TryTake(out T item) {
-            int cur;
+            int localTakeCursor;
+
+            if (takeCursor < addCursor) {
+                item = default;
+                return false;
+            }
+
             bool cursorLockTaken = false;
             try { 
                 takeCursorLock.Enter(ref cursorLockTaken);
 
                 if (takeCursor < addCursor) {
-                    cur = unchecked(++takeCursor);
+                    localTakeCursor = unchecked(++takeCursor);
                 } else {
                     //queue is empty
                     item = default;
@@ -109,7 +119,7 @@ namespace FasterThanStandardLib {
                 if(cursorLockTaken) takeCursorLock.Exit(); 
             }
 
-            slots[cur & indexifier].Take(out item);
+            slots[localTakeCursor & indexifier].Take(out item);
             return true;
         }
 
