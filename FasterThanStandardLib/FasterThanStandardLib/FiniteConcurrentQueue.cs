@@ -17,8 +17,8 @@ namespace FasterThanStandardLib {
         private readonly int capacity;
         private readonly int indexifier;
         private readonly bool isUnmanaged;
-        private volatile int addCursor = int.MinValue;
-        private volatile int takeCursor = int.MinValue;
+        private volatile int addCursor = 0;//todo: test these from int.minvalue
+        private volatile int takeCursor = 0;
         private HighContentionSpinLock addCursorLock = new HighContentionSpinLock();
         private HighContentionSpinLock takeCursorLock = new HighContentionSpinLock();
 
@@ -75,7 +75,7 @@ namespace FasterThanStandardLib {
             int localAddCursor = 0;
             int addCurLimit = capacity + takeCursor;
 
-            if (addCursor < addCurLimit) {
+            if (addCursor >= addCurLimit) {
                 return false;
             }
 
@@ -99,7 +99,7 @@ namespace FasterThanStandardLib {
         public bool TryTake(out T item) {
             int localTakeCursor;
 
-            if (takeCursor < addCursor) {
+            if (takeCursor >= addCursor) {
                 item = default;
                 return false;
             }
@@ -138,58 +138,60 @@ namespace FasterThanStandardLib {
             return checked(++n);
         }
 
-        private class ItemSlot {//todo: make struct?
-            private ItemLeaf[] leaves;
-            private readonly int indexifier;
+        private class ItemSlot {
+            private const int CAPACITY = 16;//must be pow of 2
+            private const int INDEXIFIER = CAPACITY-1;
 
-            public ItemSlot() {
-                leaves = new ItemLeaf[8];
-                for(int i = 0; i < 8; i++) {
-                    leaves[i] = new ItemLeaf();
-                }
-                indexifier = 8 - 1;
-            }
+            private ItemLeaf[] leaves = new ItemLeaf[CAPACITY];
 
             public void Take(out T item) {//todo: true returning instead of ref
                 int i = 0;
-                do {
-                    ItemLeaf leaf = leaves[i & indexifier];
+                item = default;
 
-                    bool taken = false;
-                    try {
-                        Monitor.TryEnter(leaf, ref taken);
-                        if(taken) {
-                            if(leaf.hasItem) {
+                do {
+                    ref ItemLeaf leaf = ref leaves[i & INDEXIFIER];
+
+                    bool done = false;
+
+                    try { } finally {
+                        if (Interlocked.CompareExchange(ref leaf.IsLocked, 1, 0) == 0) {
+                            if (leaf.HasItem) {
                                 item = leaf.Item;
-                                leaf.hasItem = false;
-                                return;
+                                leaf.HasItem = false;
+                                done = true;
                             }
+                            leaf.IsLocked = 0;
                         }
-                    } finally {
-                        if(taken) Monitor.Exit(leaf);
+                    }
+
+                    if (done) {
+                        return;
                     }
 
                     i++;
-                } while(true);
+                } while (true);
             }
 
             public void Add(T item) {
                 int i = 0;
                 do {
-                    ItemLeaf leaf = leaves[i & indexifier];
+                    ref ItemLeaf leaf = ref leaves[i & INDEXIFIER];
 
-                    bool taken = false;
-                    try {
-                        Monitor.TryEnter(leaf, ref taken);
-                        if(taken) {
-                            if(!leaf.hasItem) {
+                    bool done = false;
+
+                    try { } finally {
+                        if (Interlocked.CompareExchange(ref leaf.IsLocked, 1, 0) == 0) {
+                            if (!leaf.HasItem) {
                                 leaf.Item = item;
-                                leaf.hasItem = true;
-                                return;
+                                leaf.HasItem = true;
+                                done = true;
                             }
+                            leaf.IsLocked = 0;
                         }
-                    } finally { 
-                        if(taken) Monitor.Exit(leaf); 
+                    }
+
+                    if (done) {
+                        return;
                     }
 
                     i++;
@@ -197,9 +199,10 @@ namespace FasterThanStandardLib {
             }
         }
 
-        private class ItemLeaf {
+        private struct ItemLeaf {
             public T Item;
-            public volatile bool hasItem;
+            public volatile bool HasItem;
+            public volatile int IsLocked;
         }
 
     }
