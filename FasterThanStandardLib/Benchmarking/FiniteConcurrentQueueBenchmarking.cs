@@ -11,11 +11,11 @@ using System.Threading.Tasks;
 namespace Benchmarking {
     public class FiniteConcurrentQueueBenchmarking {
         public static void Benchmark() {
-            var capacity = 128;
+            var capacity = 256;
             var iterationsPerThread = 10000000;
             var threadCount = 2;
             Stopwatch stopwatch = new Stopwatch();
-            int numOfQueues = 1;
+            int numOfQueues = 32;
 
             Console.WriteLine();
             Console.WriteLine("queues have a capacity of " + capacity);
@@ -84,6 +84,8 @@ namespace Benchmarking {
                     threads[i].Join();
                 }
             });
+
+            return;
         }
 
         private async static Task TestConcurrentQueueAsync(int capacity, int iterationsPerThread, int threadCount) {
@@ -98,6 +100,7 @@ namespace Benchmarking {
                             case 0:
                             case 1:
                                 if(count <= capacity) {
+                                    //afaik this is the fastest way to limit queue growth, checking queue.Count is much slower
                                     Interlocked.Increment(ref count);
                                     queue.Enqueue(1);
                                 }
