@@ -11,67 +11,38 @@ namespace FasterThanStandardLib {
     public class HighContentionSpinLock{
         private const int SLEEP_ONE_FREQUENCY = 63;//needs to be 1 less than a pow of 2!
         private const int SLEEP_ZERO_FREQUENCY = 15;//needs to be 1 less than a pow of 2!
-        private const int SPINNING_FACTOR = 100;
-        private const int MAXIMUM_WAITERS = 1024;//concurrent access can allow waiter count to exceed this but only a bit
+        private const int TIGHT_SPIN_COUNT = 64;
 
-        private int waiterCount = 1;
         private volatile int isHeld;
 
-        public void Enter(ref bool lockTaken) {
+        public void Enter(ref bool lockTaken) {//todo: can wrap this method in another one and pass timeout condition here
             Debug.Assert(lockTaken == false, "lockTaken must be initialized to false prior to calling.");
 
-            while(isHeld == 0) {
-                Thread.BeginCriticalRegion();
-                if(Interlocked.CompareExchange(ref isHeld, 1, 0) == 0) {
-                    lockTaken = true;
-                    return;
-                }
-                Thread.EndCriticalRegion();
-            }
-
             int i = 0;
-            int turn = (waiterCount > MAXIMUM_WAITERS) ? MAXIMUM_WAITERS : Interlocked.Increment(ref waiterCount);
 
-            //fast checking
-            int processorCount = PlatformHelper.ProcessorCount;//todo: replace
-            if(turn < processorCount) {
-                int processFactor = 1;
-                while(i <= turn * SPINNING_FACTOR) {
-                    i++;
-
-                    Thread.SpinWait((turn + i) * SPINNING_FACTOR * processFactor);
-
-                    if(processFactor < processorCount) processFactor++;
-
-                    if(isHeld == 0) {
-                        Thread.BeginCriticalRegion();
-                        if (Interlocked.CompareExchange(ref isHeld, 1, 0) == 0){
-                            lockTaken = true;
-                            return;
-                        }
-                        Thread.EndCriticalRegion();
-                    }
+            for (; i < TIGHT_SPIN_COUNT; i++) {
+                try { } finally {
+                    if (Interlocked.CompareExchange(ref isHeld, 1, 0) == 0)
+                        lockTaken = true;
                 }
+                if (lockTaken) return;
             }
 
-            //slow checking
             while(true) {
-                //todo: use turn down here too
-                if(i % SLEEP_ONE_FREQUENCY == 0) {
+                if ((i & SLEEP_ONE_FREQUENCY) == 0) {
                     Thread.Sleep(1);
-                } else if(i % SLEEP_ZERO_FREQUENCY == 0) {
+                } else if ((i & SLEEP_ZERO_FREQUENCY) == 0) {
                     Thread.Sleep(0);
                 } else {
                     Thread.Yield();
                 }
 
-                if(isHeld == 0) {
-                    Thread.BeginCriticalRegion();
-                    if(Interlocked.CompareExchange(ref isHeld, 1, 0) == 0) {
-                        lockTaken = true;
-                        return;
+                if (isHeld == 0) {
+                    try { } finally {
+                        if (Interlocked.CompareExchange(ref isHeld, 1, 0) == 0)
+                            lockTaken = true;
                     }
-                    Thread.EndCriticalRegion();
+                    if (lockTaken) return;
                 }
 
                 i++;
@@ -81,7 +52,6 @@ namespace FasterThanStandardLib {
         public void Exit() {
             Debug.Assert(isHeld == 1, "Trying to exit unowned lock.");
             isHeld = 0;//todo: memory barrier?
-            Thread.EndCriticalRegion();
         }
 
 
