@@ -36,6 +36,15 @@ namespace FasterThanStandardLib {
             }
         }
 
+        internal void TryEnter(ref bool lockTaken) {
+            Debug.Assert(lockTaken == false, "lockTaken must be initialized to false prior to calling.");
+
+            try { } finally {
+                if (Interlocked.CompareExchange(ref isHeld, 1, 0) == 0)
+                    lockTaken = true;
+            }
+        }
+
         public void Exit() {
             Debug.Assert(isHeld == 1, "Trying to exit unowned lock.");
             isHeld = 0;//todo: memory barrier?
