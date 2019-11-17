@@ -32,12 +32,9 @@ namespace FasterThanStandardLib {
             this.capacity = capacity;
 
             //need array size to be a power of 2 so we can do modulo with bitwise ANDing
-            var arraySize = NextPositivePowerOf2(capacity);//todo: probably want a minimum size here to reduce contention
+            var arraySize = NextPositivePowerOf2(capacity+512);//debug//todo: probably want a minimum size here to reduce contention
             indexifier = arraySize - 1;
             slots = new ItemSlot[arraySize];
-            for (int i = 0; i < arraySize; i++) {
-                slots[i] = new ItemSlot();
-            }
         }
 
         public int Count => Math.Max(0, addCursor - takeCursor);
@@ -92,7 +89,17 @@ namespace FasterThanStandardLib {
                 if(cursorLockTaken) addCursorLock.Exit(); 
             }
 
-            slots[localAddCursor & indexifier].Add(item);
+            ref var slot = ref slots[localAddCursor & indexifier];
+            bool adderLockTaken = false;
+            try {
+                slot.adderLock.Enter(ref adderLockTaken);
+                while (slot.HasItem) { }
+                slot.Item = item;
+                slot.HasItem = true;
+            } finally {
+                if (adderLockTaken) slot.adderLock.Exit();
+            }
+
             return true;
         }
 
@@ -119,7 +126,20 @@ namespace FasterThanStandardLib {
                 if(cursorLockTaken) takeCursorLock.Exit(); 
             }
 
-            slots[localTakeCursor & indexifier].Take(out item);
+            ref var slot = ref slots[localTakeCursor & indexifier];
+            bool takerLockTaken = false;
+            try {
+                slot.takerLock.Enter(ref takerLockTaken);
+                while (slot.HasItem == false) { }
+                item = slot.Item;
+                if (!isUnmanaged) {
+                    slot.Item = default;
+                }
+                slot.HasItem = false;
+            } finally {
+                if (takerLockTaken) slot.takerLock.Exit();
+            }
+
             return true;
         }
 
@@ -138,71 +158,11 @@ namespace FasterThanStandardLib {
             return checked(++n);
         }
 
-        private class ItemSlot {
-            private const int CAPACITY = 16;//must be pow of 2
-            private const int INDEXIFIER = CAPACITY-1;
-
-            private ItemLeaf[] leaves = new ItemLeaf[CAPACITY];
-
-            public void Take(out T item) {//todo: true returning instead of ref
-                int i = 0;
-                item = default;
-
-                do {
-                    ref ItemLeaf leaf = ref leaves[i & INDEXIFIER];
-
-                    bool done = false;
-
-                    try { } finally {
-                        if (Interlocked.CompareExchange(ref leaf.IsLocked, 1, 0) == 0) {
-                            if (leaf.HasItem) {
-                                item = leaf.Item;
-                                leaf.HasItem = false;
-                                done = true;
-                            }
-                            leaf.IsLocked = 0;
-                        }
-                    }
-
-                    if (done) {
-                        return;
-                    }
-
-                    i++;
-                } while (true);
-            }
-
-            public void Add(T item) {
-                int i = 0;
-                do {
-                    ref ItemLeaf leaf = ref leaves[i & INDEXIFIER];
-
-                    bool done = false;
-
-                    try { } finally {
-                        if (Interlocked.CompareExchange(ref leaf.IsLocked, 1, 0) == 0) {
-                            if (!leaf.HasItem) {
-                                leaf.Item = item;
-                                leaf.HasItem = true;
-                                done = true;
-                            }
-                            leaf.IsLocked = 0;
-                        }
-                    }
-
-                    if (done) {
-                        return;
-                    }
-
-                    i++;
-                } while(true);
-            }
-        }
-
-        private struct ItemLeaf {
+        private struct ItemSlot {
             public T Item;
             public volatile bool HasItem;
-            public volatile int IsLocked;
+            public HighContentionSpinLock adderLock;
+            public HighContentionSpinLock takerLock;
         }
 
     }
