@@ -13,7 +13,7 @@ namespace FasterThanStandardLib {
         private const int YIELD_FREQUENCY = 15;//needs to be 1 less than a pow of 2!
         private const int SLEEP_ONE_FREQUENCY = 7;//needs to be 1 less than a pow of 2!
 
-        private volatile int isHeld;
+        private int isHeld;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Enter(ref bool lockTaken) {
@@ -46,8 +46,8 @@ namespace FasterThanStandardLib {
         }
 
         public void Exit() {
-            Debug.Assert(isHeld == 1, "Trying to exit unowned lock.");
-            isHeld = 0;//todo: memory barrier?
+            Debug.Assert(Volatile.Read(ref isHeld) != 0, "Trying to exit unowned lock.");
+            Volatile.Write(ref isHeld, 0);
         }
 
     }
