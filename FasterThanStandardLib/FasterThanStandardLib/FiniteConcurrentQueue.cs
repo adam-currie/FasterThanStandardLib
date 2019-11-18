@@ -13,10 +13,12 @@ namespace FasterThanStandardLib {
 
     public class FiniteConcurrentQueue<T> : IProducerConsumerCollection<T> {
         private static readonly int MAX_CAPACITY = 1073741824;//2^30, largest capacity we can allow because next highest power of 2 would wrap
+        private static readonly int MIN_CAPACITY = 2048;// we want a minimum size to reduce contention when looping back around
+        private static readonly int MIN_CAPACITY_SMALL = 64;
+
         private readonly ItemSlot[] slots;
         private readonly int capacity;
         private readonly int indexifier;
-        private readonly bool isUnmanaged;
         private volatile int addCursor = 0;//todo: test these from int.minvalue
         private volatile int takeCursor = 0;
         private HighContentionSpinLock addCursorLock = new HighContentionSpinLock();
@@ -24,15 +26,22 @@ namespace FasterThanStandardLib {
 
         public FiniteConcurrentQueue(int capacity) : this(capacity, false) { }
 
-        protected FiniteConcurrentQueue(int capacity, bool isUnmanaged) {
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="capacity"></param>
+        /// <param name="small"> 
+        ///     Smaller memory footprint in short queues at the expense of performance under very high concurrency.
+        /// </param>
+        protected FiniteConcurrentQueue(int capacity, bool small = false) {
             if (capacity < 0) throw new ArgumentException("capacity cannot be negative");
             if (capacity > MAX_CAPACITY) throw new ArgumentException("capacity cannot be greater than " + MAX_CAPACITY);
 
-            this.isUnmanaged = isUnmanaged;
             this.capacity = capacity;
 
             //need array size to be a power of 2 so we can do modulo with bitwise ANDing
-            var arraySize = NextPositivePowerOf2(capacity+512);//debug//todo: probably want a minimum size here to reduce contention
+            var arraySize = NextPositivePowerOf2(capacity + (small? MIN_CAPACITY_SMALL : MIN_CAPACITY));
+
             indexifier = arraySize - 1;
             slots = new ItemSlot[arraySize];
         }
@@ -89,25 +98,15 @@ namespace FasterThanStandardLib {
                 if(cursorLockTaken) addCursorLock.Exit(); 
             }
 
-            ref var slot = ref slots[localAddCursor & indexifier];
-            bool adderLockTaken = false;
-            try {
-                slot.adderLock.Enter(ref adderLockTaken);
-                while (slot.HasItem) { }
-                slot.Item = item;
-                slot.HasItem = true;
-            } finally {
-                if (adderLockTaken) slot.adderLock.Exit();
-            }
-
+            slots[localAddCursor & indexifier].Add(item);
             return true;
         }
 
         public bool TryTake(out T item) {
+            item = default;
             int localTakeCursor;
 
             if (takeCursor >= addCursor) {
-                item = default;
                 return false;
             }
 
@@ -119,27 +118,13 @@ namespace FasterThanStandardLib {
                     localTakeCursor = unchecked(++takeCursor);
                 } else {
                     //queue is empty
-                    item = default;
                     return false;// EARLY RETURN
                 }
             } finally { 
                 if(cursorLockTaken) takeCursorLock.Exit(); 
             }
 
-            ref var slot = ref slots[localTakeCursor & indexifier];
-            bool takerLockTaken = false;
-            try {
-                slot.takerLock.Enter(ref takerLockTaken);
-                while (slot.HasItem == false) { }
-                item = slot.Item;
-                if (!isUnmanaged) {
-                    slot.Item = default;
-                }
-                slot.HasItem = false;
-            } finally {
-                if (takerLockTaken) slot.takerLock.Exit();
-            }
-
+            item = slots[localTakeCursor & indexifier].Take();
             return true;
         }
 
@@ -159,10 +144,55 @@ namespace FasterThanStandardLib {
         }
 
         private struct ItemSlot {
-            public T Item;
-            public volatile bool HasItem;
-            public HighContentionSpinLock adderLock;
-            public HighContentionSpinLock takerLock;
+            private T item;
+            private volatile bool hasItem;//todo: replace volatile
+            private int takerLock;
+            private int adderLock;
+
+            public T Take() {
+                T item = default;
+                bool done = false;
+                while (true) {
+                    try { } finally {
+                        if (Interlocked.CompareExchange(ref takerLock, 1, 0) == 0) {
+                            //wait for the adder to finish, we want to do a tight loop here because we are holding a lock
+                            while (hasItem == false) { }
+                            item = this.item;
+                            this.item = default;
+                            hasItem = false;
+                            Volatile.Write(ref takerLock, 0);
+                            done = true;
+                        }
+                    }
+                    if (done) {
+                        return item;
+                    }
+                    //if there is contention here then things must be really backed up, so just cede control completely
+                    Thread.Sleep(1);
+                }
+            }
+
+            public T Add(T item) {
+                bool done = false;
+                while (true) {
+                    try { } finally {
+                        if (Interlocked.CompareExchange(ref adderLock, 1, 0) == 0) {
+                            //wait for the taker to finish, we want to do a tight loop here because we are holding a lock
+                            while (hasItem) { }
+                            this.item = item;
+                            hasItem = true;
+                            Volatile.Write(ref adderLock, 0);
+                            done = true;
+                        }
+                    }
+                    if (done) {
+                        return item;
+                    }
+                    //if there is contention here then things must be really backed up, so just cede control completely
+                    Thread.Sleep(1);
+                }
+            }
+
         }
 
     }
