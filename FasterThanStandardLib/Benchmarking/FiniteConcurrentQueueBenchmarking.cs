@@ -12,10 +12,10 @@ namespace Benchmarking {
     public class FiniteConcurrentQueueBenchmarking {
         public static void Benchmark() {
             var capacity = 256;
-            var iterationsPerThread = 10000000;
-            var threadCount = 2;
+            var iterationsPerThread = 1000000;
+            var threadCount = 32;
             Stopwatch stopwatch = new Stopwatch();
-            int numOfQueues = 32;
+            int numOfQueues = 1;
 
             Console.WriteLine();
             Console.WriteLine("queues have a capacity of " + capacity);
@@ -29,10 +29,10 @@ namespace Benchmarking {
                 {
                     stopwatch.Start();
                     Task[] tasks = new Task[numOfQueues];
-                    for(int i = 0; i < numOfQueues; i++) {
+                    for (int i = 0; i < numOfQueues; i++) {
                         tasks[i] = TestConcurrentQueueAsync(capacity, iterationsPerThread, threadCount);
                     }
-                    for(int i = 0; i < numOfQueues; i++) {
+                    for (int i = 0; i < numOfQueues; i++) {
                         tasks[i].Wait();
                     }
                     stopwatch.Stop();
@@ -63,15 +63,20 @@ namespace Benchmarking {
             Thread[] threads = new Thread[threadCount];
             FiniteConcurrentQueue<int> littleQueue = (isUnmanaged) ? new FiniteConcurrentQueueUnmanaged<int>(capacity) : new FiniteConcurrentQueue<int>(capacity);
 
-            for(int i = 0; i < threads.Length; i++) {
+            //debug int adds = 0;//debug
+            //debug int takes = 0;//debug
+
+            for (int i = 0; i < threads.Length; i++) {
                 (threads[i] = new Thread(() => {
                     for(int j = 0; j < iterationsPerThread; j++) {
                         switch(j % 3) {
                             case 0:
                             case 1:
+                                //debug if (littleQueue.TryAdd(1)) Interlocked.Increment(ref adds);//debug
                                 littleQueue.TryAdd(1);
                                 break;
                             default:
+                                //debug if (littleQueue.TryTake(out _)) Interlocked.Increment(ref takes);//debug
                                 littleQueue.TryTake(out _);
                                 break;
                         }
@@ -84,6 +89,9 @@ namespace Benchmarking {
                     threads[i].Join();
                 }
             });
+
+            //debug Console.WriteLine("takes: " + takes);//debug
+            //debug Console.WriteLine("adds: " + adds);//debug 
 
             return;
         }
