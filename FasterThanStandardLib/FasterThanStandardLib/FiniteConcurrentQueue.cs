@@ -3,28 +3,23 @@ using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Threading;
 
 namespace FasterThanStandardLib {
 
-    public class FiniteConcurrentQueueUnmanaged<T> : FiniteConcurrentQueue<T> where T : unmanaged {
-        public FiniteConcurrentQueueUnmanaged(int capacity) : base(capacity, true) { }
-    }
-
     public class FiniteConcurrentQueue<T> : IProducerConsumerCollection<T> {
         private static readonly int MAX_CAPACITY = 1073741824;//2^30, largest capacity we can allow because next highest power of 2 would wrap
-        private static readonly int MIN_CAPACITY = 2048;// we want a minimum size to reduce contention when looping back around
-        private static readonly int MIN_CAPACITY_SMALL = 64;
+        private static readonly int MIN_CAPACITY = 1024;// we want a minimum size to reduce contention when looping back around
+        private static readonly int MIN_CAPACITY_SMALL = 256;
 
         private readonly ItemSlot[] slots;
         private readonly int capacity;
         private readonly int indexifier;
         private volatile int addCursor = 0;//todo: test these from int.minvalue
         private volatile int takeCursor = 0;
-        private HighContentionSpinLock addCursorLock = new HighContentionSpinLock();
-        private HighContentionSpinLock takeCursorLock = new HighContentionSpinLock();
-
-        public FiniteConcurrentQueue(int capacity) : this(capacity, false) { }
+        private UnFairSpinLock addCursorLock;
+        private UnFairSpinLock takeCursorLock;
 
         /// <summary>
         /// 
@@ -33,14 +28,14 @@ namespace FasterThanStandardLib {
         /// <param name="small"> 
         ///     Smaller memory footprint in short queues at the expense of performance under very high concurrency.
         /// </param>
-        protected FiniteConcurrentQueue(int capacity, bool small = false) {
+        public FiniteConcurrentQueue(int capacity, bool small = false) {
             if (capacity < 0) throw new ArgumentException("capacity cannot be negative");
             if (capacity > MAX_CAPACITY) throw new ArgumentException("capacity cannot be greater than " + MAX_CAPACITY);
 
             this.capacity = capacity;
 
             //need array size to be a power of 2 so we can do modulo with bitwise ANDing
-            var arraySize = NextPositivePowerOf2(capacity + (small? MIN_CAPACITY_SMALL : MIN_CAPACITY));
+            var arraySize = NextPositivePowerOf2(capacity + (small ? MIN_CAPACITY_SMALL : MIN_CAPACITY));
 
             indexifier = arraySize - 1;
             slots = new ItemSlot[arraySize];
@@ -85,17 +80,19 @@ namespace FasterThanStandardLib {
                 return false;
             }
 
-            bool cursorLockTaken = false;
-            try {
-                addCursorLock.Enter(ref cursorLockTaken);
-
-                if(addCursor < addCurLimit) {
+            bool full = false;
+            try { } finally {
+                addCursorLock.UnsafeEnter();
+                if (addCursor < addCurLimit) {
                     localAddCursor = unchecked(++addCursor);
                 } else {
-                    return false;// EARLY RETURN
+                    full = true;
                 }
-            } finally { 
-                if(cursorLockTaken) addCursorLock.Exit(); 
+                addCursorLock.Exit();
+            }
+
+            if (full) {
+                return false;
             }
 
             slots[localAddCursor & indexifier].Add(item);
@@ -104,24 +101,25 @@ namespace FasterThanStandardLib {
 
         public bool TryTake(out T item) {
             item = default;
-            int localTakeCursor;
+            int localTakeCursor = 0;
 
             if (takeCursor >= addCursor) {
                 return false;
             }
 
-            bool cursorLockTaken = false;
-            try { 
-                takeCursorLock.Enter(ref cursorLockTaken);
-
+            bool empty = false;
+            try { } finally {
+                takeCursorLock.UnsafeEnter();
                 if (takeCursor < addCursor) {
                     localTakeCursor = unchecked(++takeCursor);
                 } else {
-                    //queue is empty
-                    return false;// EARLY RETURN
+                    empty = true;
                 }
-            } finally { 
-                if(cursorLockTaken) takeCursorLock.Exit(); 
+                takeCursorLock.Exit();
+            }
+
+            if (empty) {
+                return false;
             }
 
             item = slots[localTakeCursor & indexifier].Take();
@@ -144,51 +142,50 @@ namespace FasterThanStandardLib {
         }
 
         private struct ItemSlot {
-            private T item;
-            private volatile bool hasItem;//todo: replace volatile
-            private int takerLock;
-            private int adderLock;
+            private const int STATE_EMPTY = 0;
+            private const int STATE_FULL = 1;
+            private const int STATE_LOCKED_EMPTYING = 2;
+            private const int STATE_LOCKED_FILLING = 3;
 
+            private T item;
+            private int state;
+            
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
             public T Take() {
-                T item = default;
-                bool done = false;
-                while (true) {
-                    try { } finally {
-                        if (Interlocked.CompareExchange(ref takerLock, 1, 0) == 0) {
-                            //wait for the adder to finish, we want to do a tight loop here because we are holding a lock
-                            while (hasItem == false) { }
-                            item = this.item;
-                            this.item = default;
-                            hasItem = false;
-                            Volatile.Write(ref takerLock, 0);
-                            done = true;
-                        }
-                    }
-                    if (done) {
-                        return item;
-                    }
-                    //if there is contention here then things must be really backed up, so just cede control completely
-                    Thread.Sleep(1);
+                T result;
+                try { } finally {
+                    LockForEmptying();
+                    result = item;
+                    item = default;
+                    Volatile.Write(ref state, STATE_EMPTY);
+                }
+                return result;
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public void Add(T item) {
+                try { } finally {
+                    LockForFilling();
+                    this.item = item;
+                    Volatile.Write(ref state, STATE_FULL);
                 }
             }
 
-            public T Add(T item) {
-                bool done = false;
-                while (true) {
-                    try { } finally {
-                        if (Interlocked.CompareExchange(ref adderLock, 1, 0) == 0) {
-                            //wait for the taker to finish, we want to do a tight loop here because we are holding a lock
-                            while (hasItem) { }
-                            this.item = item;
-                            hasItem = true;
-                            Volatile.Write(ref adderLock, 0);
-                            done = true;
-                        }
-                    }
-                    if (done) {
-                        return item;
-                    }
-                    //if there is contention here then things must be really backed up, so just cede control completely
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            private void LockForEmptying() => Lock(STATE_FULL, STATE_LOCKED_EMPTYING, STATE_LOCKED_FILLING);
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            private void LockForFilling() => Lock(STATE_EMPTY, STATE_LOCKED_FILLING, STATE_LOCKED_EMPTYING);
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            private void Lock(int preLockState, int intraLockState, int oppositeIntraLockState) {
+                int testedState;
+                while (preLockState != (testedState = Interlocked.CompareExchange(ref state, intraLockState, preLockState))) {
+                    //if we are in the opposite lock them we must be close to having the chance to grab it so try twice
+                    if (testedState == oppositeIntraLockState &&
+                        preLockState == Interlocked.CompareExchange(ref state, intraLockState, preLockState))
+                        return;
+
                     Thread.Sleep(1);
                 }
             }
@@ -196,4 +193,5 @@ namespace FasterThanStandardLib {
         }
 
     }
+
 }

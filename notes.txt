@@ -1,0 +1,1 @@
+spin locking(with some yielding) to increment has barely any more overhead than a bare Interlocked.Increment and has way lower cpu usage because it yields appropriately

@@ -9,9 +9,8 @@ using System.Threading;
 
 namespace FasterThanStandardLib {
 
-    public struct HighContentionSpinLock{
-        private const int YIELD_FREQUENCY = 15;//needs to be 1 less than a pow of 2!
-        private const int SLEEP_ONE_FREQUENCY = 7;//needs to be 1 less than a pow of 2!
+    public struct UnFairSpinLock{
+        private const int TIGHT_LOOP_COUNT = 32;
 
         private int isHeld;
 
@@ -19,23 +18,28 @@ namespace FasterThanStandardLib {
         public void Enter(ref bool lockTaken) {
             Debug.Assert(lockTaken == false, "lockTaken must be initialized to false prior to calling.");
 
-            int i = 0;
-            while (true) {
+            for (int i = 0; true; i++) {
                 try { } finally {
                     if (Interlocked.CompareExchange(ref isHeld, 1, 0) == 0)
                         lockTaken = true;
                 }
                 if (lockTaken) return;
 
-                i++;
-                if ((i & YIELD_FREQUENCY) == 0) {
-                    Thread.Yield();
-                } else if ((i & SLEEP_ONE_FREQUENCY) == 0) {
-                    Thread.Sleep(1);
-                }
+                if (i >= TIGHT_LOOP_COUNT) Thread.Sleep(i);
             }
         }
 
+        /// <summary>
+        /// Acquires the lock.
+        /// Must be called in a finally block to ensure that the internal lock is not left permenantly locked in the case of a thread abort.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void UnsafeEnter() {
+            for (int i = 0; Interlocked.CompareExchange(ref isHeld, 1, 0) != 0; i++)
+                if (i >= TIGHT_LOOP_COUNT) Thread.Sleep(i);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal void TryEnter(ref bool lockTaken) {
             Debug.Assert(lockTaken == false, "lockTaken must be initialized to false prior to calling.");
 
@@ -45,6 +49,7 @@ namespace FasterThanStandardLib {
             }
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Exit() {
             Debug.Assert(Volatile.Read(ref isHeld) != 0, "Trying to exit unowned lock.");
             Volatile.Write(ref isHeld, 0);

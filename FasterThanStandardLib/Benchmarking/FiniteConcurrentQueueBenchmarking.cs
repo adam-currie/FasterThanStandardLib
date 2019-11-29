@@ -12,10 +12,10 @@ namespace Benchmarking {
     public class FiniteConcurrentQueueBenchmarking {
         public static void Benchmark() {
             var capacity = 256;
-            var iterationsPerThread = 1000000;
+            var iterationsPerThread = 10000000;
             var threadCount = 32;
             Stopwatch stopwatch = new Stopwatch();
-            int numOfQueues = 1;
+            int numOfQueues = 10;
 
             Console.WriteLine();
             Console.WriteLine("queues have a capacity of " + capacity);
@@ -26,19 +26,33 @@ namespace Benchmarking {
             while(true) {
                 Console.WriteLine();
 
-                {
-                    stopwatch.Start();
-                    Task[] tasks = new Task[numOfQueues];
-                    for (int i = 0; i < numOfQueues; i++) {
-                        tasks[i] = TestConcurrentQueueAsync(capacity, iterationsPerThread, threadCount);
-                    }
-                    for (int i = 0; i < numOfQueues; i++) {
-                        tasks[i].Wait();
-                    }
-                    stopwatch.Stop();
-                    Console.WriteLine("ConcurrentQueue x" + numOfQueues + ": " + stopwatch.ElapsedMilliseconds + "ms");
-                    stopwatch.Reset();
-                }
+                //{
+                //    stopwatch.Start();
+                //    Task[] tasks = new Task[numOfQueues];
+                //    for (int i = 0; i < numOfQueues; i++) {
+                //        tasks[i] = TestConcurrentQueueAsync(capacity, iterationsPerThread, threadCount);
+                //    }
+                //    for (int i = 0; i < numOfQueues; i++) {
+                //        tasks[i].Wait();
+                //    }
+                //    stopwatch.Stop();
+                //    Console.WriteLine("ConcurrentQueue x" + numOfQueues + ": " + stopwatch.ElapsedMilliseconds + "ms");
+                //    stopwatch.Reset();
+                //}
+
+                //{
+                //    stopwatch.Start();
+                //    Task[] tasks = new Task[numOfQueues];
+                //    for (int i = 0; i < numOfQueues; i++) {
+                //        tasks[i] = TestConcurrentLoopAsync(capacity, iterationsPerThread, threadCount);
+                //    }
+                //    for (int i = 0; i < numOfQueues; i++) {
+                //        tasks[i].Wait();
+                //    }
+                //    stopwatch.Stop();
+                //    Console.WriteLine("TweakedConcurrentQueue x" + numOfQueues + ": " + stopwatch.ElapsedMilliseconds + "ms");
+                //    stopwatch.Reset();
+                //}
 
                 {
                     stopwatch.Start();
@@ -54,22 +68,22 @@ namespace Benchmarking {
                     stopwatch.Reset();
                 }
 
-                numOfQueues++;
+                //numOfQueues++;
             }
 
         }
 
-        private async static Task TestFiniteConcurrentQueueAsync(int capacity, int iterationsPerThread, int threadCount, bool isUnmanaged = false) {
+        private async static Task TestFiniteConcurrentQueueAsync(int capacity, int iterationsPerThread, int threadCount) {
             Thread[] threads = new Thread[threadCount];
-            FiniteConcurrentQueue<int> littleQueue = (isUnmanaged) ? new FiniteConcurrentQueueUnmanaged<int>(capacity) : new FiniteConcurrentQueue<int>(capacity);
-
+            FiniteConcurrentQueue<int> littleQueue = new FiniteConcurrentQueue<int>(capacity);
+            
             //debug int adds = 0;//debug
             //debug int takes = 0;//debug
 
             for (int i = 0; i < threads.Length; i++) {
                 (threads[i] = new Thread(() => {
                     for(int j = 0; j < iterationsPerThread; j++) {
-                        switch(j % 3) {
+                        switch (j % 3) {
                             case 0:
                             case 1:
                                 //debug if (littleQueue.TryAdd(1)) Interlocked.Increment(ref adds);//debug
@@ -96,25 +110,55 @@ namespace Benchmarking {
             return;
         }
 
+        //private async static Task TestConcurrentLoopAsync(int capacity, int iterationsPerThread, int threadCount) {
+        //    Thread[] threads = new Thread[threadCount];
+        //    ConcurrentLoop<int> loop = new ConcurrentLoop<int>(capacity);
+
+        //    for(int i = 0; i < threads.Length; i++) {
+        //        (threads[i] = new Thread(() => {
+        //            for(int j = 0; j < iterationsPerThread; j++) {
+        //                switch (j % 3) {
+        //                    case 0:
+        //                    case 1:
+        //                        //debug if (littleQueue.TryAdd(1)) Interlocked.Increment(ref adds);//debug
+        //                        loop.TryAdd(1);
+        //                        break;
+        //                    default:
+        //                        //debug if (littleQueue.TryTake(out _)) Interlocked.Increment(ref takes);//debug
+        //                        loop.TryTake(out _);
+        //                        break;
+        //                }
+        //            }
+        //        })).Start();
+        //    }
+
+        //    await Task.Run(() => {
+        //        for(int i = 0; i < threads.Length; i++) {
+        //            threads[i].Join();
+        //        }
+        //    });
+        //}
+
         private async static Task TestConcurrentQueueAsync(int capacity, int iterationsPerThread, int threadCount) {
             Thread[] threads = new Thread[threadCount];
             ConcurrentQueue<int> queue = new ConcurrentQueue<int>();
+
             int count = 0;
 
-            for(int i = 0; i < threads.Length; i++) {
+            for (int i = 0; i < threads.Length; i++) {
                 (threads[i] = new Thread(() => {
-                    for(int j = 0; j < iterationsPerThread; j++) {
-                        switch(j % 3) {
+                    for (int j = 0; j < iterationsPerThread; j++) {
+                        switch (j % 3) {
                             case 0:
                             case 1:
-                                if(count <= capacity) {
+                                if (count <= capacity) {
                                     //afaik this is the fastest way to limit queue growth, checking queue.Count is much slower
                                     Interlocked.Increment(ref count);
                                     queue.Enqueue(1);
                                 }
                                 break;
                             default:
-                                if(queue.TryDequeue(out _)) {
+                                if (queue.TryDequeue(out _)) {
                                     Interlocked.Decrement(ref count);
                                 }
                                 break;
@@ -124,10 +168,11 @@ namespace Benchmarking {
             }
 
             await Task.Run(() => {
-                for(int i = 0; i < threads.Length; i++) {
+                for (int i = 0; i < threads.Length; i++) {
                     threads[i].Join();
                 }
             });
         }
+
     }
 }
