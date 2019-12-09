@@ -7,15 +7,16 @@ using System.Threading;
 
 namespace FasterThanStandardLib {
     public struct FairSpinLock {
-
         private int next;
         private int owner;
 
         /// <summary>
         /// Acquires the lock.
-        /// Must be called in a finally block to ensure that the internal lock is not left permenantly locked in the case of a thread abort.
-        /// </summary>
-        [MethodImpl(MethodImplOptions.NoInlining)]
+        /// In the event of <see cref="System.Threading.ThreadAbortException"/> it's impossible to tell if the lock was acquired!
+        /// Calling this method from within a finally block will prevent the thread abort from 
+        /// interrupting control flow until after this method returns and the lock is known to be acquired.
+        /// </summary
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void UnsafeEnter() {
             int self = Interlocked.Increment(ref next)-1;
 
@@ -28,17 +29,22 @@ namespace FasterThanStandardLib {
                 prevDiff = diff;
 
                 sleepDuration *= diff;
-                sleepDuration /= improvement * 8;
+                sleepDuration /= improvement * 4;
                 sleepDuration += diff;
 
-                Thread.Sleep(1);
+                Thread.Sleep(sleepDuration);
             }
         }
 
-
+        /// <summary>
+        /// Releases the lock.
+        /// </summary>
+        /// <remarks>
+        /// Calling this when the caller does not own the lock results in undefined behavior.
+        /// </remarks>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Exit() {
-            Volatile.Write(ref owner, owner+1);
+            Volatile.Write(ref owner, owner + 1);
         }
 
     }
